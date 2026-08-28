@@ -1,0 +1,1142 @@
+---
+title: "CPAL-CPAL260-sv"
+output: html_document
+date: "2026-02-04"
+---
+
+# setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## load libraries
+
+```{r load_libraries, warning=FALSE, message=FALSE}
+
+packages_needed <- c("readxl", "dplyr", "tidyverse",
+                     "ggplot2", "ggspatial", "ggpubr", 
+                     "reshape2", "runner", "grid")
+# packages_needed <- c("RColorBrewer", ,
+#                      "scales", "ggmap",
+#                      "pophelper",
+#                      "gridExtra", "label.switching", "remotes",
+#                      "stringr", "writexl", "ggpmisc",
+#                      "dismo", "maps", "mapdata",
+#                      "adegenet", "poppr", "hierfstat",
+#                      "vcfR", "ape", "pegas")
+
+for(i in 1:length(packages_needed)){
+  if(!(packages_needed[i] %in% installed.packages())){install.packages(packages_needed[i])}
+  library(packages_needed[i], character.only = TRUE)
+}
+
+```
+
+## define functions
+### format FST DF
+```{r define_prepFSTdf_FX}
+
+FST_df_prep <- function(CHROMS_DF, POPLIST, FOCALPOP, WINDOW_SIZE, AVG_THRESH_CT, SUBSET_FACTOR) {
+  
+  #identify files to combine
+  #COMPARISONS <- subset(POPLIST, !(POPLIST %in% FOCALPOP))
+  WILDCARD1 <- paste0(BASEDIR, "fst/", FOCALPOP, "-*_subset", SUBSET_FACTOR, ".fst.txt")
+  FILENAMES1 <- Sys.glob(WILDCARD1) 
+  WILDCARD2 <- paste0(BASEDIR, "fst/*-", FOCALPOP, "_subset", SUBSET_FACTOR, ".fst.txt")
+  FILENAMES2 <- Sys.glob(WILDCARD2)
+  file_list <- c(as.list(FILENAMES1), as.list(FILENAMES2))
+  FILENAMES <- c(FILENAMES1, FILENAMES2)
+
+  #read in files
+  fst_df <- file_list %>%
+    set_names(nm = FILENAMES) %>%
+    map_dfr(
+      ~ read_delim(.x,
+                   skip = 1,
+                   col_types = cols(),
+                   col_names = c("region", "chr", "midpos", "nsites", "fst"),
+                   delim = "\t"),
+      
+      .id = "comparison"
+    )
+  
+  colnames(CHROMS_DF) <- c("chr", "chr_num")
+  fst_df <- fst_df %>%
+    filter(chr %in% CHROMS_DF$chr)
+  fst_df <- left_join(fst_df, CHROMS_DF, by = "chr")
+
+  fst_df <- fst_df %>%
+    mutate(tmp1 = gsub(paste0(BASEDIR, "fst/"), "", comparison)) %>%
+    mutate(tmp1 = gsub(paste0("_subset", SUBSET_FACTOR, ".fst.txt"), "", tmp1)) %>%
+    mutate(tmp2 = gsub(FOCALPOP, "", tmp1)) %>%
+    mutate(POP2 = gsub("-", "", tmp2))
+  fst_df$POP2 <- factor(fst_df$POP2, levels = POPLIST)
+  fst_df$chr_num <- factor(fst_df$chr_num, levels = CHROMS_DF$chr_num)
+  fst_df$fst_neg0 <- fst_df$fst
+  fst_df$fst_neg0[fst_df$fst_neg0 < 0] <- 0
+  
+  fst_df <- fst_df %>% 
+    arrange(POP2,chr,midpos)
+
+  #sliding window
+  window_df <- fst_df %>%
+    mutate(window = (floor(midpos/WINDOW_SIZE) * WINDOW_SIZE) + (WINDOW_SIZE/2)) %>%
+    group_by(POP2,chr,window) %>%
+    summarize(window_fst = mean(fst_neg0), count=n(), POP2 = first(POP2), chr_num = first(chr_num)) %>%
+    filter(count >= AVG_THRESH_CT)
+  
+  final_fst_df <- full_join(fst_df[c("chr","chr_num","midpos","fst_neg0","POP2")],
+                             as.data.frame(window_df),
+                             by = c("chr" = "chr", 
+                                    "midpos" = "window", 
+                                    "POP2" = "POP2", 
+                                    "chr_num" = "chr_num"))
+
+  final_fst_df
+
+}
+
+```
+
+### plot pca
+```{r plot_pca_fx}
+
+plot_pca <- function(FEATURE_DF, COV_MATRIX) {
+  pca_e <- eigen(COV_MATRIX)
+  first3pcs <- data.frame(pca_e$vectors[,1:3])
+  labeled_first3pcs <- cbind(FEATURE_DF,
+                             pc1 = first3pcs$X1,
+                             pc2 = first3pcs$X2,
+                             pc3 = first3pcs$X3)
+  pca_graph <- ggplot(labeled_first3pcs, aes(x = pc1, y = pc2, color = color_feature, fill = color_feature, shape = shape_feature)) + 
+    geom_point(size = 3) +
+    scale_fill_manual(values=opt1_region_palette) +
+    scale_color_manual(values=opt1_region_palette) +
+    scale_shape_manual(values=c("spawning" = 17, 
+                                "non-spawning" = 19, 
+                                "A" = 24, 
+                                "B" = 21, 
+                                "C" = 25,
+                                "D" = 22,
+                                "n/a" = 4)) +
+    xlab(paste0("PC1 - ", sprintf("%0.2f", pca_e$values[1]), "%")) +
+    ylab(paste0("PC2 - ", sprintf("%0.2f", pca_e$values[2]), "%"))
+}
+
+```
+
+### beagle to heatmap df
+```{r beagle2heatmapdf_fx}
+beagle2heatmapdf <- function(beagle_filename){
+  beagle_table <- read.table(beagle_filename)
+  geno_matrix <- matrix(ncol = ((ncol(beagle_table)-3)/3), nrow = (nrow(beagle_table)-1))
+  colnames(geno_matrix) <- paste0("Ind",1:((ncol(beagle_table)-3)/3))
+  for(i in 2:nrow(beagle_table)){
+    for(j in 6:ncol(beagle_table)){
+      if(j%%3 == 0){
+        hom_major <- as.double(beagle_table[i,(j-2)])
+        het <- as.double(beagle_table[i,(j-1)])
+        hom_minor <- as.double(beagle_table[i,(j)])
+        probs <- c(hom_major, het, hom_minor)
+        
+        if(probs[1] == probs[2] & probs[1] == probs[3]){
+          geno_matrix[(i-1),((j/3)-1)] <- NA
+        } else if(probs[1] == max(probs) & probs[1] == probs[2]){
+          geno_matrix[(i-1),((j/3)-1)] <- 1 + probs[1]
+        } else if(probs[1] == max(probs) & probs[1] == probs[3]){
+          geno_matrix[(i-1),((j/3)-1)] <- "NO"
+        } else if(probs[2] == max(probs) & probs[2] == probs[3]){
+          geno_matrix[(i-1),((j/3)-1)] <- 3 + probs[2]
+        } else if(max(probs) == probs[1]){
+          geno_matrix[(i-1),((j/3)-1)] <- abs(probs[1]-1)
+        } else if(max(probs) == probs[2]){
+          geno_matrix[(i-1),((j/3)-1)] <- 2 + probs[2]
+        } else if(max(probs) == probs[3]){
+          geno_matrix[(i-1),((j/3)-1)] <- 4 + probs[3]
+        }
+      }
+    } 
+  }
+    
+  ## convert matrix to datatable for plotting
+  geno_table <- reshape2::melt(geno_matrix)
+    
+  ## Rename columns 
+  colnames(geno_table) <- c("locus", "Ind", "value")
+  
+  geno_table
+}
+
+```
+
+### geno_heatmap_df to heatmap plot
+```{r heatmapdf2plot_fx}
+
+heatmapdf2plot <- function(geno_df){
+  heatmap_plot <- ggplot(geno_df, aes(x = locus, y = Ind, fill = value)) +
+    geom_tile() +
+    theme_minimal()+ 
+    theme(axis.text.x=element_blank(), 
+          axis.ticks.x=element_blank(), 
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank())+
+    theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          panel.background = element_blank(), 
+          axis.line = element_line(colour = "black"), 
+          text = element_text(size = 12), 
+          legend.key.size = unit(1, 'cm')) +
+    ylab(label ="Individual")+
+    scale_fill_gradient2(low = "#790E0E", mid = "#63666A", high = "#1C197E",
+                         midpoint = 3.0, 
+                         guide = "colourbar", 
+                         na.value = "white")
+
+  #low = "#9BD75E", mid = "#1DC2A6", high = "#1E36C2"
+  heatmap_plot
+  
+}
+
+```
+
+### geno_heatmap_df to bar function
+```{r df2bar_fx}
+
+df2bar <- function(geno_df){
+  
+  id_bar_plot <- ggplot(geno_df, aes(cluster_text, Ind, fill = cluster)) +
+    geom_tile() + 
+    theme_minimal()+ 
+    theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          panel.background = element_blank(),  
+          axis.line = element_blank(), 
+          legend.text = element_text(size = 12), 
+          legend.key.size = unit(1, 'cm')) +
+    theme(axis.text.x=element_blank(), 
+          axis.ticks.x=element_blank(), 
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank()) +
+    xlab(label = ". ") +
+    ylab(label = " ") +
+    scale_fill_manual(values = opt1_region_palette) + 
+    theme(legend.position="left") + 
+    theme(axis.text.x=element_blank())
+    
+  id_bar_plot
+}
+
+```
+
+### get ld df
+```{r define_get_ld_df_fx}
+
+get_LD_df <- function(LINKAGE_FILENAME){
+  r <- read.table(LINKAGE_FILENAME, header = FALSE, stringsAsFactors = FALSE)
+  
+  colnames(r) <- c("snp1", "snp2", "bp_space", "r2", "D", "Dp", "r2_EM")
+  
+  r_ord <- r[order(r$snp1, r$snp2),]
+  for(i in 3:ncol(r_ord)){r_ord[,i] <- as.numeric(r_ord[,i])}
+  for(j in 1:2){r_ord[,j] <- as.character(r_ord[,j])}
+  
+  r_ord
+  
+}
+
+```
+
+### plot ld heatmap
+```{r define_plot_ld_heatmap_fx}
+
+plot_ld_heatmap <- function(LD_DF, max_r2){
+  LDHM <- ggplot(data = LD_DF, aes(snp1, snp2, fill = r2))+
+    geom_tile()+
+	  scale_fill_gradient2(low = "white", 
+	                       high = "#86050A", 
+	                       mid = "#E2B8A8",
+	                       midpoint = max_r2 / 2,
+	                       limit = c(0,max_r2),
+	                       space = "Lab", 
+	                       name="LD") +
+    ggtitle("linkage disequilibrium")+
+    theme_minimal()+ 
+    theme(axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(), 
+          axis.text.y=element_blank(),  
+	  		  axis.ticks.y=element_blank())+
+  			  coord_fixed()+
+   			  theme(panel.grid.major = element_blank(),
+   			        panel.grid.minor = element_blank(),
+   			        panel.background = element_blank(), 
+   			        axis.line = element_line(colour = "black"),
+   			        legend.key.size = unit(1, 'cm'))
+  
+  LDHM
+  
+}
+
+```
+
+# specify
+## get basic info
+```{r project_setup}
+
+#places and names
+BASEDIR <- "/home/laura/Liftsphere/CPAL-CPAL260/structural_variants/" #the directory where the metadata file lives
+FIG_DIR <- paste0(BASEDIR, "FIGURES/")
+PREFIX <- "CPAL-CPAL260-sv" #the prefix for the lcWGS run
+#EBS spawning beagles
+CHR7_BIT1_BEAGLE_FILENAME <- paste0(BASEDIR, "beagles/", PREFIX, "_chr7-1.beagle")
+CHR12_BIT1_BEAGLE_FILENAME <- paste0(BASEDIR, "beagles/", PREFIX, "_chr12-1.beagle")
+CHR7_BIT2_BEAGLE_FILENAME <- paste0(BASEDIR, "beagles/", PREFIX, "_chr7-2.beagle")
+CHR12_BIT2_BEAGLE_FILENAME <- paste0(BASEDIR, "beagles/", PREFIX, "_chr12-2.beagle")
+
+#ALL-noJP spawning beagles (GOA + UN + EBS + KOTZ)
+CHR7_SV_ALL_noJP_BEAGLE_FILENAME <- paste0(BASEDIR, "beagles/", PREFIX, "_ALL-noJP_chr7-2.beagle")
+CHR12_SV_ALL_noJP_BEAGLE_FILENAME <- paste0(BASEDIR, "beagles/", PREFIX, "_ALL-noJP_chr12-2.beagle")
+
+#ALL spawning beagles (JP + GOA + UN + EBS + KOTZ)
+CHR7_SV_ALL_BEAGLE_FILENAME <- paste0(BASEDIR, "beagles/", PREFIX, "_ALL_chr7-2.beagle")
+CHR12_SV_ALL_BEAGLE_FILENAME <- paste0(BASEDIR, "beagles/", PREFIX, "_ALL_chr12-2.beagle")
+
+#chromosomes
+CHROMFILE <- "/home/laura/Liftsphere/CPAL-CPAL260/Clupal_chrom_metadata.txt"
+chrom_df <- read.table(CHROMFILE, header = TRUE)
+
+#metadata
+METADATAFILE <- "/home/laura/Liftsphere/CPAL-CPAL260/pacific-herring-260_metadata.xlsx" #metadatafile name (excel file)
+SHEET <- "Sheet1" #sheet containing the pertinent metadata
+metadata <- read_xlsx(METADATAFILE, sheet = SHEET)
+ebs_metadata_df <- metadata %>%
+  filter(final_eBSAI == 1) %>%
+  filter(spawning == "spawning")
+sv_metadata_df <- metadata %>%
+  filter(sv_dataset == 1)
+
+#palette
+opt1_region_palette <- c("Constantine Bay" = "#d9d2e9",
+                         "Port Moller" = "#cbacc9",
+                         "Togiak" = "#bc86a9",
+                         "Goodnews Bay" = "#ae6089",
+                         "Kangirlvar Bay" = "#964779",
+                         "Nelson Island" = "#763878",
+                         "Norton Sound" = "#562a77",
+                         "Kotzebue" = "#351c75",
+                         "Popof Island" = "#fdd0a2",
+                         "Kodiak - Kiliuda" = "#fd8d3c",
+                         "Kodiak - Uganik" = "#d94801",
+                         "Cordova" = "#8c2d04",
+                         "Unalaska" = "#808080",
+                         "Japan" = "#000000",
+                         "A" = "#07520D",
+                         "B" = "#47824C",
+                         "C" = "#88B48C",
+                         "D" = "#C7E5CA")
+
+#theme
+theme_set(
+  theme( 
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 90, size = 10, vjust = 0.5),
+    axis.text.y = element_text(angle = 0, size = 10),
+    panel.background = element_rect(fill = "white"), 
+    panel.spacing = unit(0,"lines"),
+    strip.text.y = element_text(angle = 0) 
+  )
+)
+
+#scales::show_col(opt1_region_palette, labels = FALSE)
+
+```
+
+
+# FST: CPAL-CPAL260-sv clusters 
+## Manhattan plots
+```{r ebs_spawning_clust_fst_manh}
+
+window_size_bp <- 95000
+window_avg_threshold <- 10
+subset_n <- 100
+
+clusts <- c("A", "B", "C", "D")
+for (clust in clusts) {
+  clust_df <- FST_df_prep(chrom_df, clusts, clust, window_size_bp, window_avg_threshold, subset_n)
+  clust_manh_plot <- ggplot(data = clust_df, aes(x = midpos, y = fst_neg0)) +
+    geom_point(aes(color=as.factor(chr_num)), alpha = 0.5) +
+    geom_path(aes(x = midpos, y = window_fst), color = "darkblue") +
+    scale_color_manual(values = rep(c("lightblue", "lightgrey"), 25 )) +
+    facet_grid(POP2 ~ chr_num, scales = "free_x") +
+    scale_y_continuous(breaks=c(0.0, 0.25, 0.5, 0.75, 1), limits=c(0, 1)) +
+    scale_x_continuous(breaks = c(1e7,2e7)) +
+    ylab(expression(italic(F[ST]))) +
+    xlab("Chromosome position (Mb)") +
+    ggtitle(paste0(PREFIX, ": cluster ", clust, " vs all"))
+  
+  # ggsave(paste0(FIG_DIR, 
+  #               PREFIX, 
+  #               "_cluster", 
+  #               clust, 
+  #               "_subset",
+  #               subset_n,
+  #               "_",
+  #               window_size_bp, 
+  #               "-", 
+  #               window_avg_threshold,
+  #               ".fst.jpg"), 
+  #        width = 10, 
+  #        height = 8, 
+  #        units = "in",
+  #        dpi = 600)
+}
+
+```
+
+
+
+## localize sv margins
+### A vs C
+#### A-C FST df setup
+```{r AC_fst_setup}
+
+window_size_bp <- 100000
+window_avg_threshold <- 100000
+subset_n <- 0
+
+AC_clusts <- c("A", "C")
+A_clust <- "A"
+clustA_df <- FST_df_prep(chrom_df, AC_clusts, A_clust, window_size_bp, window_avg_threshold, subset_n)
+chr7_AC_df <- clustA_df %>%
+  filter(chr_num == 7)
+chr12_AC_df <- clustA_df %>%
+  filter(chr_num == 12)
+rm(clustA_df)
+
+```
+
+#### A-C FST chr7
+```{r AC_chr7_manh}
+
+chr7_AC_0.5fst_sv_df <- chr7_AC_df %>%
+  filter(fst_neg0 >= 0.5) %>%
+  filter(midpos >= 2.0e7 & midpos <= 2.8e7)
+chr7_AC_sv_start_pos <- min(chr7_AC_0.5fst_sv_df$midpos, na.rm = T)
+chr7_AC_sv_end_pos <- max(chr7_AC_0.5fst_sv_df$midpos, na.rm = T)
+
+(chr7_AC_manh <- ggplot(data = chr7_AC_df, aes(x = midpos, y = fst_neg0)) +
+    geom_point(aes(color=as.factor(chr_num)), alpha = 0.5) +
+    geom_vline(aes(xintercept = chr7_AC_sv_start_pos), color = "black") +
+    geom_vline(aes(xintercept = chr7_AC_sv_end_pos), color = "black") +
+    scale_color_manual(values = rep(c("lightblue", "lightgrey"), 25 )) +
+    xlim(c(2.0e7,2.8e7)) +
+    ylab(expression(italic(F[ST]))) +
+    xlab("Chromosome position (Mb)") +
+    ggtitle("CPAL-CPAL260-sv: cluster A vs cluster C, chr7 only"))
+
+```
+
+
+
+#### A-C FST chr12
+```{r AC_chr12_manh}
+
+chr12_AC_0.5fst_sv_df <- chr12_AC_df %>%
+  filter(fst_neg0 >= 0.5) %>%
+  filter(midpos >= 1.75e7 & midpos <= 2.75e7)
+chr12_AC_sv_start_pos <- min(chr12_AC_0.5fst_sv_df$midpos, na.rm = T)
+chr12_AC_sv_end_pos <- max(chr12_AC_0.5fst_sv_df$midpos, na.rm = T)
+
+(chr12_AC_manh <- ggplot(data = chr12_AC_df, aes(x = midpos, y = fst_neg0)) +
+    geom_point(aes(color=as.factor(chr_num)), alpha = 0.5) +
+    geom_vline(aes(xintercept = chr12_AC_sv_start_pos), color = "black") +
+    geom_vline(aes(xintercept = chr12_AC_sv_end_pos), color = "black") +
+    scale_color_manual(values = rep(c("lightblue", "lightgrey"), 25 )) +
+    xlim(c(1.75e7,2.75e7)) +
+    ylab(expression(italic(F[ST]))) +
+    xlab("Chromosome position (Mb)") +
+    ggtitle("CPAL-CPAL260-sv: cluster A vs cluster C, chr12 only"))
+
+```
+
+
+
+### B vs D
+#### B-D FST df setup
+```{r BD_fst_setup}
+
+window_size_bp <- 100000
+window_avg_threshold <- 100000
+subset_n <- 0
+
+BD_clusts <- c("B", "D")
+B_clust <- "B"
+clustB_df <- FST_df_prep(chrom_df, BD_clusts, B_clust, window_size_bp, window_avg_threshold, subset_n)
+chr7_BD_df <- clustB_df %>%
+  filter(chr_num == 7)
+chr12_BD_df <- clustB_df %>%
+  filter(chr_num == 12)
+rm(clustB_df)
+
+```
+
+#### B-D FST chr7
+```{r BD_chr7_manh}
+
+chr7_BD_0.5fst_sv_df <- chr7_BD_df %>%
+  filter(fst_neg0 >= 0.5) %>%
+  filter(midpos >= 2.0e7 & midpos <= 2.8e7)
+chr7_BD_sv_start_pos <- min(chr7_BD_0.5fst_sv_df$midpos, na.rm = T)
+chr7_BD_sv_end_pos <- max(chr7_BD_0.5fst_sv_df$midpos, na.rm = T)
+
+(chr7_BD_manh <- ggplot(data = chr7_BD_df, aes(x = midpos, y = fst_neg0)) +
+    geom_point(aes(color=as.factor(chr_num)), alpha = 0.5) +
+    geom_vline(aes(xintercept = chr7_BD_sv_start_pos), color = "black") +
+    geom_vline(aes(xintercept = chr7_BD_sv_end_pos), color = "black") +
+    scale_color_manual(values = rep(c("lightblue", "lightgrey"), 25 )) +
+    xlim(c(2.0e7,2.8e7)) +
+    ylab(expression(italic(F[ST]))) +
+    xlab("Chromosome position (Mb)") +
+    ggtitle("CPAL-CPAL260-sv: cluster B vs cluster D, chr7 only"))
+
+```
+
+
+
+#### B-D FST chr12
+```{r BD_chr12_manh}
+
+chr12_BD_0.5fst_sv_df <- chr12_BD_df %>%
+  filter(fst_neg0 >= 0.5) %>%
+  filter(midpos >= 1.75e7 & midpos <= 2.75e7)
+chr12_BD_sv_start_pos <- min(chr12_BD_0.5fst_sv_df$midpos, na.rm = T)
+chr12_BD_sv_end_pos <- max(chr12_BD_0.5fst_sv_df$midpos, na.rm = T)
+
+(chr12_BD_manh <- ggplot(data = chr12_BD_df, aes(x = midpos, y = fst_neg0)) +
+   geom_point(aes(color=as.factor(chr_num)), alpha = 0.5) +
+   # geom_vline(aes(xintercept = chr12_BD_sv_start_pos), color = "black") +
+   geom_vline(aes(xintercept = chr12_BD_sv_end_pos), color = "black") +
+   scale_color_manual(values = rep(c("lightblue", "lightgrey"), 25 )) +
+   xlim(c(1.75e7,2.75e7)) +
+   ylab(expression(italic(F[ST]))) +
+   xlab("Chromosome position (Mb)") +
+   ggtitle("CPAL-CPAL260-sv: cluster B vs cluster D, chr12 only"))
+
+```
+
+
+
+### SV margins summary
+```{r print_sv_margins}
+
+sv_manh_plots <- ggarrange(chr7_AC_manh, chr12_AC_manh, chr7_BD_manh, chr12_BD_manh, ncol = 2, nrow = 2, common.legend = TRUE)
+#ggsave(paste0(FIG_DIR, PREFIX, "_fst_manh.fst.jpg"), width = 16, height = 10, units = "in", dpi = 600)
+
+print(paste0("chromosome 7, A vs C, start pos: ", chr7_AC_sv_start_pos, "; end pos: ", chr7_AC_sv_end_pos))
+print(paste0("chromosome 7, B vs D, start pos: ", chr7_BD_sv_start_pos, "; end pos: ", chr7_BD_sv_end_pos))
+print(paste0("chromosome 12, A vs C, start pos: ", chr12_AC_sv_start_pos, "; end pos: ", chr12_AC_sv_end_pos))
+print(paste0("chromosome 12, B vs D, start pos: ", chr12_BD_sv_start_pos, "; end pos: ", chr12_BD_sv_end_pos))
+
+```
+
+
+### What's that weird break in chr7's sv?
+```{r chr7_sv_break}
+
+break_start_pos <- 2.6313e7
+break_end_pos <- 2.64525e7
+
+chr7_AC_manh <- ggplot(data = chr7_AC_df, aes(x = midpos, y = fst_neg0)) +
+    geom_point(aes(color=as.factor(chr_num)), alpha = 0.5) +
+    geom_vline(aes(xintercept = break_start_pos), color = "black", linetype = 3) +
+    geom_vline(aes(xintercept = break_end_pos), color = "black", linetype = 3) +
+    scale_color_manual(values = rep(c("lightblue", "lightgrey"), 25 )) +
+    xlim(c(2.625e7,2.65e7)) +
+    ylab(expression(italic(F[ST]))) +
+    xlab("Chromosome position (Mb)") +
+    ggtitle("CPAL-CPAL260-sv: chr7 break, cluster A vs cluster C")
+
+chr7_BD_manh <- ggplot(data = chr7_BD_df, aes(x = midpos, y = fst_neg0)) +
+    geom_point(aes(color=as.factor(chr_num)), alpha = 0.5) +
+    geom_vline(aes(xintercept = break_start_pos), color = "black", linetype = 3) +
+    geom_vline(aes(xintercept = break_end_pos), color = "black", linetype = 3) +
+    scale_color_manual(values = rep(c("lightblue", "lightgrey"), 25 )) +
+    xlim(c(2.625e7,2.65e7)) +
+    ylab(expression(italic(F[ST]))) +
+    xlab("Chromosome position (Mb)") +
+    ggtitle("CPAL-CPAL260-sv: chr7 break, cluster B vs cluster D")
+
+ggarrange(chr7_AC_manh, chr7_BD_manh, nrow = 2, common.legend = T)
+
+#ggsave(paste0(FIG_DIR, PREFIX, "_chr7-sv-break_fst_manh.fst.jpg"), width = 10, height = 10, units = "in", dpi = 600)
+
+```
+
+## SVs in other populations
+### spawning GOA
+```{r goa_manh}
+
+window_size_bp <- 10000
+window_avg_threshold <- 5
+subset_n <- 10
+
+goa_clusts <- c("A", "B", "C", "D", "goa")
+goa_clust <- "goa"
+goa_fst_df <- FST_df_prep(chrom_df, goa_clusts, goa_clust, window_size_bp, window_avg_threshold, subset_n)
+
+nrow(goa_fst_df)
+sum(is.na(goa_fst_df$window_fst) == FALSE)
+
+(goa_manh_plot <- ggplot(data = goa_fst_df, aes(x = midpos, y = fst_neg0)) +
+    geom_point(aes(color=as.factor(chr_num)), alpha = 0.5) +
+    geom_vline(data = filter(goa_fst_df, chr_num == 7), aes(xintercept = chr7_BD_sv_start_pos), color = "black", linetype = 3) +
+    geom_vline(data = filter(goa_fst_df, chr_num == 7), aes(xintercept = chr7_AC_sv_end_pos), color = "black", linetype = 3) +
+    geom_vline(data = filter(goa_fst_df, chr_num == 12), aes(xintercept = chr12_AC_sv_start_pos), color = "black", linetype = 3) +
+    geom_vline(data = filter(goa_fst_df, chr_num == 12), aes(xintercept = chr12_AC_sv_end_pos), color = "black", linetype = 3) +
+    #geom_path(aes(x = midpos, y = window_fst), color = "darkblue") +
+    scale_color_manual(values = rep(c("lightblue", "lightgrey"), 25 )) +
+    facet_grid(POP2 ~ chr_num, scales = "free_x") +
+    scale_y_continuous(breaks=c(0.0, 0.25, 0.5, 0.75, 1), limits=c(0, 1)) +
+    scale_x_continuous(breaks = c(1e7,2e7)) +
+    ylab(expression(italic(F[ST]))) +
+    xlab("Chromosome position (Mb)") +
+    ggtitle(paste0(PREFIX, ": cluster ", clust, " vs all")))
+  
+# ggsave(paste0(FIG_DIR,
+#               PREFIX,
+#               "_cluster",
+#               clust,
+#               "_subset",
+#               subset_n,
+#               "_",
+#               window_size_bp,
+#               "-",
+#               window_avg_threshold,
+#               ".fst.jpg"),
+#        width = 10,
+#        height = 8,
+#        units = "in",
+#        dpi = 600)
+
+```
+
+
+
+### non-spawning GOA
+```{r popof_manh}
+
+window_size_bp <- 10000
+window_avg_threshold <- 5
+subset_n <- 10
+
+popof_clusts <- c("A", "B", "C", "D", "popof")
+popof_clust <- "popof"
+popof_fst_df <- FST_df_prep(chrom_df, popof_clusts, popof_clust, window_size_bp, window_avg_threshold, subset_n)
+
+nrow(popof_fst_df)
+sum(is.na(popof_fst_df$window_fst) == FALSE)
+
+(popof_manh_plot <- ggplot(data = popof_fst_df, aes(x = midpos, y = fst_neg0)) +
+    geom_point(aes(color=as.factor(chr_num)), alpha = 0.5) +
+    geom_vline(data = filter(goa_fst_df, chr_num == 7), aes(xintercept = chr7_BD_sv_start_pos), color = "black", linetype = 3) +
+    geom_vline(data = filter(goa_fst_df, chr_num == 7), aes(xintercept = chr7_AC_sv_end_pos), color = "black", linetype = 3) +
+    geom_vline(data = filter(goa_fst_df, chr_num == 12), aes(xintercept = chr12_AC_sv_start_pos), color = "black", linetype = 3) +
+    geom_vline(data = filter(goa_fst_df, chr_num == 12), aes(xintercept = chr12_AC_sv_end_pos), color = "black", linetype = 3) +
+    #geom_path(aes(x = midpos, y = window_fst), color = "darkblue") +
+    scale_color_manual(values = rep(c("lightblue", "lightgrey"), 25 )) +
+    facet_grid(POP2 ~ chr_num, scales = "free_x") +
+    scale_y_continuous(breaks=c(0.0, 0.25, 0.5, 0.75, 1), limits=c(0, 1)) +
+    scale_x_continuous(breaks = c(1e7,2e7)) +
+    ylab(expression(italic(F[ST]))) +
+    xlab("Chromosome position (Mb)") +
+    ggtitle(paste0(PREFIX, ": cluster ", clust, " vs all")))
+  
+# ggsave(paste0(FIG_DIR,
+#               PREFIX,
+#               "_cluster",
+#               clust,
+#               "_subset",
+#               subset_n,
+#               "_",
+#               window_size_bp,
+#               "-",
+#               window_avg_threshold,
+#               ".fst.jpg"),
+#        width = 10,
+#        height = 8,
+#        units = "in",
+#        dpi = 600)
+
+```
+
+
+### kotzebue
+```{r kotzebue_manh}
+
+window_size_bp <- 10000
+window_avg_threshold <- 5
+subset_n <- 10
+
+kotzebue_clusts <- c("A", "B", "C", "D", "kotzebue")
+kotzebue_clust <- "kotzebue"
+kotzebue_fst_df <- FST_df_prep(chrom_df, kotzebue_clusts, kotzebue_clust, window_size_bp, window_avg_threshold, subset_n)
+
+nrow(kotzebue_fst_df)
+sum(is.na(kotzebue_fst_df$window_fst) == FALSE)
+
+(kotzebue_manh_plot <- ggplot(data = kotzebue_fst_df, aes(x = midpos, y = fst_neg0)) +
+    geom_point(aes(color=as.factor(chr_num)), alpha = 0.5) +
+    geom_vline(data = filter(kotzebue_fst_df, chr_num == 7), aes(xintercept = chr7_BD_sv_start_pos), color = "black", linetype = 3) +
+    geom_vline(data = filter(kotzebue_fst_df, chr_num == 7), aes(xintercept = chr7_AC_sv_end_pos), color = "black", linetype = 3) +
+    geom_vline(data = filter(kotzebue_fst_df, chr_num == 12), aes(xintercept = chr12_AC_sv_start_pos), color = "black", linetype = 3) +
+    geom_vline(data = filter(kotzebue_fst_df, chr_num == 12), aes(xintercept = chr12_AC_sv_end_pos), color = "black", linetype = 3) +
+    #geom_path(aes(x = midpos, y = window_fst), color = "darkblue") +
+    scale_color_manual(values = rep(c("lightblue", "lightgrey"), 25 )) +
+    facet_grid(POP2 ~ chr_num, scales = "free_x") +
+    scale_y_continuous(breaks=c(0.0, 0.25, 0.5, 0.75, 1), limits=c(0, 1)) +
+    scale_x_continuous(breaks = c(1e7,2e7)) +
+    ylab(expression(italic(F[ST]))) +
+    xlab("Chromosome position (Mb)") +
+    ggtitle(paste0(PREFIX, ": cluster ", kotzebue_clust, " vs all")))
+  
+# ggsave(paste0(FIG_DIR,
+#               PREFIX,
+#               "_cluster",
+#               kotzebue_clust,
+#               "_subset",
+#               subset_n,
+#               "_",
+#               window_size_bp,
+#               "-",
+#               window_avg_threshold,
+#               ".fst.jpg"),
+#        width = 10,
+#        height = 8,
+#        units = "in",
+#        dpi = 600)
+
+```
+
+
+
+### unalaska
+```{r unalaska_manh}
+
+window_size_bp <- 10000
+window_avg_threshold <- 5
+subset_n <- 10
+
+unalaska_clusts <- c("A", "B", "C", "D", "unalaska")
+unalaska_clust <- "unalaska"
+unalaska_fst_df <- FST_df_prep(chrom_df, unalaska_clusts, unalaska_clust, window_size_bp, window_avg_threshold, subset_n)
+
+nrow(unalaska_fst_df)
+sum(is.na(unalaska_fst_df$window_fst) == FALSE)
+
+(unalaska_manh_plot <- ggplot(data = unalaska_fst_df, aes(x = midpos, y = fst_neg0)) +
+    geom_point(aes(color=as.factor(chr_num)), alpha = 0.5) +
+    geom_vline(data = filter(unalaska_fst_df, chr_num == 7), aes(xintercept = chr7_BD_sv_start_pos), color = "black", linetype = 3) +
+    geom_vline(data = filter(unalaska_fst_df, chr_num == 7), aes(xintercept = chr7_AC_sv_end_pos), color = "black", linetype = 3) +
+    geom_vline(data = filter(unalaska_fst_df, chr_num == 12), aes(xintercept = chr12_AC_sv_start_pos), color = "black", linetype = 3) +
+    geom_vline(data = filter(unalaska_fst_df, chr_num == 12), aes(xintercept = chr12_AC_sv_end_pos), color = "black", linetype = 3) +
+    #geom_path(aes(x = midpos, y = window_fst), color = "darkblue") +
+    scale_color_manual(values = rep(c("lightblue", "lightgrey"), 25 )) +
+    facet_grid(POP2 ~ chr_num, scales = "free_x") +
+    scale_y_continuous(breaks=c(0.0, 0.25, 0.5, 0.75, 1), limits=c(0, 1)) +
+    scale_x_continuous(breaks = c(1e7,2e7)) +
+    ylab(expression(italic(F[ST]))) +
+    xlab("Chromosome position (Mb)") +
+    ggtitle(paste0(PREFIX, ": cluster ", unalaska_clust, " vs all")))
+  
+# ggsave(paste0(FIG_DIR,
+#               PREFIX,
+#               "_cluster",
+#               unalaska_clust,
+#               "_subset",
+#               subset_n,
+#               "_",
+#               window_size_bp,
+#               "-",
+#               window_avg_threshold,
+#               ".fst.jpg"),
+#        width = 10,
+#        height = 8,
+#        units = "in",
+#        dpi = 600)
+
+```
+
+
+
+# PCAs
+## chr 7
+### chr7 - bit 1
+```{r pca_chr7_bit1}
+
+covfile_chr7_bit1 <- as.matrix(read.table(paste0(BASEDIR, "pca/", PREFIX, "_chr7-1.cov")))
+features_df <- sv_metadata_df[c("Barcode", "MarineRegion", "eBSAI_clust_CORRECTED")]
+colnames(features_df) <- c("Barcode", "color_feature", "shape_feature")
+
+(pca_chr7_bit1 <- plot_pca(features_df, covfile_chr7_bit1))
+
+#ggsave(paste0(FIG_DIR, PREFIX, "_chr7-1_PCA.jpg"), width = 8, height = 6, units = "in", dpi = 600)
+
+```
+
+
+### chr7 - bit 2
+```{r pca_chr7_bit2}
+
+covfile_chr7_bit2 <- as.matrix(read.table(paste0(BASEDIR, "pca/", PREFIX, "_chr7-2.cov")))
+features_df <- sv_metadata_df[c("Barcode", "MarineRegion", "eBSAI_clust_CORRECTED")]
+colnames(features_df) <- c("Barcode", "color_feature", "shape_feature")
+
+(pca_chr7_bit2 <- plot_pca(features_df, covfile_chr7_bit2))
+
+#ggsave(paste0(FIG_DIR, PREFIX, "_chr7-2_PCA.jpg"), width = 8, height = 6, units = "in", dpi = 600)
+
+```
+
+
+## chr12
+### chr12 - bit 1
+```{r pca_chr12_bit1}
+
+covfile_chr12_bit1 <- as.matrix(read.table(paste0(BASEDIR, "pca/", PREFIX, "_chr12-1.cov")))
+features_df <- sv_metadata_df[c("Barcode", "MarineRegion", "eBSAI_clust_CORRECTED")]
+colnames(features_df) <- c("Barcode", "color_feature", "shape_feature")
+
+(pca_chr12_bit1 <- plot_pca(features_df, covfile_chr12_bit1))
+
+#ggsave(paste0(FIG_DIR, PREFIX, "_chr12-1_PCA.jpg"), width = 8, height = 6, units = "in", dpi = 600)
+
+```
+
+
+### chr12 - bit 2
+```{r pca_chr12_bit2}
+
+covfile_chr12_bit2 <- as.matrix(read.table(paste0(BASEDIR, "pca/", PREFIX, "_chr12-2.cov")))
+features_df <- sv_metadata_df[c("Barcode", "MarineRegion", "eBSAI_clust_CORRECTED")]
+colnames(features_df) <- c("Barcode", "color_feature", "shape_feature")
+
+(pca_chr12_bit2 <- plot_pca(features_df, covfile_chr12_bit2))
+
+#ggsave(paste0(FIG_DIR, PREFIX, "_chr12-2_PCA.jpg"), width = 8, height = 6, units = "in", dpi = 600)
+
+```
+
+# Linkage heatmaps
+## chr7
+### chr7 - bit 2 (structural variant), by genotype (A+D vs B+C)
+```{r chr7_bit2_geno_ld_heatmap}
+
+chr7_bit2_geno1_ld_filename <- paste0(BASEDIR, "ld/", 
+                                      PREFIX, "_AD_chr7-2_250snps.ld")
+chr7_bit2_geno2_ld_filename <- paste0(BASEDIR, "ld/", 
+                                      PREFIX, "_BC_chr7-2_250snps.ld")
+  
+chr7_bit2_geno1_ld_df <- get_LD_df(chr7_bit2_geno1_ld_filename)
+chr7_bit2_geno2_ld_df <- get_LD_df(chr7_bit2_geno2_ld_filename)
+chr7_bit2_ld_maxR2 <- max(c(chr7_bit2_geno1_ld_df$r2, chr7_bit2_geno2_ld_df$r2), na.rm = TRUE)
+chr7_bit2_geno1_ld_heatmap <- plot_ld_heatmap(chr7_bit2_geno1_ld_df, chr7_bit2_ld_maxR2)
+chr7_bit2_geno2_ld_heatmap <- plot_ld_heatmap(chr7_bit2_geno2_ld_df, chr7_bit2_ld_maxR2)
+(chr7_bit2_genos_ld_heatmap <- ggarrange(chr7_bit2_geno1_ld_heatmap,
+                                         chr7_bit2_geno2_ld_heatmap,
+                                         ncol = 2,
+                                         nrow = 1,
+                                         common.legend = T))
+# ggsave(paste0(FIG_DIR, PREFIX, "_chr7-2_250snps_by-genotype_linkage-heatmap.jpeg"),
+#        width = 12, height = 6,
+#        dpi = 600, units = "in")
+
+```
+
+
+
+## chr12
+### chr12 - bit 2 (structural variant), by genotype (A+B vs C+D)
+```{r chr12_bit2_geno_ld_heatmap}
+
+chr12_bit2_geno1_ld_filename <- paste0(BASEDIR, "ld/", 
+                                      PREFIX, "_CD_chr12-2_250snps.ld")
+chr12_bit2_geno2_ld_filename <- paste0(BASEDIR, "ld/", 
+                                      PREFIX, "_AB_chr12-2_250snps.ld")
+  
+chr12_bit2_geno1_ld_df <- get_LD_df(chr12_bit2_geno1_ld_filename)
+chr12_bit2_geno2_ld_df <- get_LD_df(chr12_bit2_geno2_ld_filename)
+chr12_bit2_ld_maxR2 <- max(c(chr12_bit2_geno1_ld_df$r2, chr12_bit2_geno2_ld_df$r2), na.rm = TRUE)
+chr12_bit2_geno1_ld_heatmap <- plot_ld_heatmap(chr12_bit2_geno1_ld_df, chr12_bit2_ld_maxR2)
+chr12_bit2_geno2_ld_heatmap <- plot_ld_heatmap(chr12_bit2_geno2_ld_df, chr12_bit2_ld_maxR2)
+(chr12_bit2_genos_ld_heatmap <- ggarrange(chr12_bit2_geno1_ld_heatmap,
+                                          chr12_bit2_geno2_ld_heatmap,
+                                          ncol = 2,
+                                          nrow = 1,
+                                          common.legend = T))
+# ggsave(paste0(FIG_DIR, PREFIX, "_chr12-2_250snps_by-genotype_linkage-heatmap.jpeg"),
+#        width = 12, height = 6,
+#        dpi = 600, units = "in")
+
+```
+
+
+
+# Genotype heatmaps
+## heatmap setup
+```{r heatmap_setup}
+
+features_df <- sv_metadata_df[c("Barcode", "MarineRegion", "eBSAI_clust_CORRECTED")]
+
+ind_list <- c()
+for (ind_num in 1:nrow(features_df)) {
+  ind_list <- append(ind_list, paste0("Ind", ind_num))
+}
+
+features_df$Ind <- ind_list
+
+```
+
+## chr7
+### chr7 - bit 1
+```{r chr7_bit1_genoheatmap}
+
+chr7_bit1_heatmap_table <- beagle2heatmapdf(CHR7_BIT1_BEAGLE_FILENAME)
+chr7_bit1_geno_plot_df <- left_join(chr7_bit1_heatmap_table, features_df)
+
+## Factor the feature into the order you want them to plot
+chr7_bit1_geno_plot_df$cluster <- factor(chr7_bit1_geno_plot_df$eBSAI_clust_CORRECTED, levels = c("A", "B", "C", "D"))
+chr7_bit1_geno_plot_df$Ind <- factor(chr7_bit1_geno_plot_df$Ind, 
+                            levels = unique((chr7_bit1_geno_plot_df$Ind)[order(chr7_bit1_geno_plot_df$cluster)]))
+
+# Plot your genotype heatmap 
+chr7_bit1_geno_heatmap <- heatmapdf2plot(chr7_bit1_geno_plot_df)
+
+## Make the colored bar that is for your population colors 
+## this will serve as your X-axis and your population ID will serve as your y-axis
+chr7_bit1_geno_plot_df <- chr7_bit1_geno_plot_df %>% 
+  mutate(cluster_text = "cluster")
+
+# plot a bar that represents population ids for the individuals in rows of the genotype heatmap
+chr7_bit1_geno_bar <- df2bar(chr7_bit1_geno_plot_df)
+
+(chr7_bit1_full_geno_heatmap <- ggarrange(chr7_bit1_geno_bar, chr7_bit1_geno_heatmap, widths = c(0.3, 1)))
+
+ggsave(paste0(FIG_DIR, PREFIX, "_chr7-1_genotype-heatmap.jpg"), width = 12, height = 8, units = "in", dpi = 600)
+
+```
+
+
+
+### chr7 - bit 2
+#### EBS spawning pops
+```{r chr7_bit2_EBS_genoheatmap}
+
+chr7_bit2_heatmap_table <- beagle2heatmapdf(CHR7_BIT2_BEAGLE_FILENAME)
+chr7_bit2_geno_plot_df <- left_join(chr7_bit2_heatmap_table, features_df)
+
+## Factor the feature into the order you want them to plot
+chr7_bit2_geno_plot_df$cluster <- factor(chr7_bit2_geno_plot_df$eBSAI_clust_CORRECTED, levels = c("A", "B", "C", "D"))
+chr7_bit2_geno_plot_df$Ind <- factor(chr7_bit2_geno_plot_df$Ind, 
+                            levels = unique((chr7_bit2_geno_plot_df$Ind)[order(chr7_bit2_geno_plot_df$cluster)]))
+
+# Plot your genotype heatmap 
+chr7_bit2_geno_heatmap <- heatmapdf2plot(chr7_bit2_geno_plot_df)
+
+## Make the colored bar that is for your population colors 
+## this will serve as your X-axis and your population ID will serve as your y-axis
+chr7_bit2_geno_plot_df <- chr7_bit2_geno_plot_df %>% 
+  mutate(cluster_text = "cluster")
+
+# plot a bar that represents population ids for the individuals in rows of the genotype heatmap
+chr7_bit2_geno_bar <- df2bar(chr7_bit2_geno_plot_df)
+
+(chr7_bit2_full_geno_heatmap <- ggarrange(chr7_bit2_geno_bar, chr7_bit2_geno_heatmap, widths = c(0.3, 1)))
+
+#ggsave(paste0(FIG_DIR, PREFIX, "_chr7-2_genotype-heatmap.jpg"), width = 12, height = 8, units = "in", dpi = 600)
+
+```
+
+
+
+#### GOA + UN + EBS + KOTZ (ALL-noJP)
+```{r chr7_sv_ALL-noJP_genoheatmap}
+
+chr7_sv_all_nojp_heatmap_table <- beagle2heatmapdf(CHR7_SV_ALL_noJP_BEAGLE_FILENAME)
+chr7_sv_all_nojp_geno_plot_df <- left_join(chr7_sv_all_nojp_heatmap_table, features_df)
+
+## Factor the feature into the order you want them to plot
+chr7_sv_all_nojp_geno_plot_df$cluster <- factor(chr7_sv_all_nojp_geno_plot_df$cluster, levels = c("A", "B", "C", "D", "Unalaska", "Kotzebue", "GOA"))
+chr7_sv_all_nojp_geno_plot_df$Ind <- factor(chr7_sv_all_nojp_geno_plot_df$Ind, 
+                            levels = unique((chr7_sv_all_nojp_geno_plot_df$Ind)[order(chr7_sv_all_nojp_geno_plot_df$cluster)]))
+
+# Plot your genotype heatmap 
+chr7_sv_all_nojp_geno_heatmap <- heatmapdf2plot(chr7_sv_all_nojp_geno_plot_df)
+
+## Make the colored bar that is for your population colors 
+## this will serve as your X-axis and your population ID will serve as your y-axis
+chr7_sv_all_nojp_geno_plot_df <- chr7_sv_all_nojp_geno_plot_df %>% 
+  mutate(cluster_text = "cluster")
+
+# plot a bar that represents population ids for the individuals in rows of the genotype heatmap
+chr7_sv_all_nojp_geno_bar <- df2bar(chr7_sv_all_nojp_geno_plot_df)
+
+(chr7_sv_all_nojp_full_geno_heatmap <- ggarrange(chr7_sv_all_nojp_geno_bar, chr7_sv_all_nojp_geno_heatmap, widths = c(0.3, 1)))
+
+ggsave(paste0(FIG_DIR, PREFIX, "_ALL-noJP_chr7-2_genotype-heatmap.jpg"), width = 12, height = 8, units = "in", dpi = 600)
+
+```
+
+
+
+#### JP + GOA + UN + EBS + KOTZ (ALL)
+```{r chr7_sv_ALL_genoheatmap}
+
+chr7_sv_all_heatmap_table <- beagle2heatmapdf(CHR7_SV_ALL_BEAGLE_FILENAME)
+chr7_sv_all_geno_plot_df <- left_join(chr7_sv_all_heatmap_table, features_df)
+
+## Factor the feature into the order you want them to plot
+chr7_sv_all_geno_plot_df$cluster <- factor(chr7_sv_all_geno_plot_df$cluster, levels = c("A", "B", "C", "D", "Unalaska", "Kotzebue", "GOA", "Japan"))
+chr7_sv_all_geno_plot_df$Ind <- factor(chr7_sv_all_geno_plot_df$Ind, 
+                            levels = unique((chr7_sv_all_geno_plot_df$Ind)[order(chr7_sv_all_geno_plot_df$cluster)]))
+
+# Plot your genotype heatmap 
+chr7_sv_all_geno_heatmap <- heatmapdf2plot(chr7_sv_all_geno_plot_df)
+
+## Make the colored bar that is for your population colors 
+## this will serve as your X-axis and your population ID will serve as your y-axis
+chr7_sv_all_geno_plot_df <- chr7_sv_all_geno_plot_df %>% 
+  mutate(cluster_text = "cluster")
+
+# plot a bar that represents population ids for the individuals in rows of the genotype heatmap
+chr7_sv_all_geno_bar <- df2bar(chr7_sv_all_geno_plot_df)
+
+(chr7_sv_all_full_geno_heatmap <- ggarrange(chr7_sv_all_geno_bar, chr7_sv_all_geno_heatmap, widths = c(0.3, 1)))
+
+ggsave(paste0(FIG_DIR, PREFIX, "_ALL_chr7-2_genotype-heatmap.jpg"), width = 12, height = 8, units = "in", dpi = 600)
+
+```
+
+
+
+## chr12
+### chr12 - bit 1
+```{r chr12_bit1_genoheatmap}
+
+chr12_bit1_heatmap_table <- beagle2heatmapdf(CHR12_BIT1_BEAGLE_FILENAME)
+chr12_bit1_geno_plot_df <- left_join(chr12_bit1_heatmap_table, features_df)
+
+## Factor the feature into the order you want them to plot
+chr12_bit1_geno_plot_df$cluster <- factor(chr12_bit1_geno_plot_df$eBSAI_clust_CORRECTED, levels = c("A", "B", "C", "D"))
+chr12_bit1_geno_plot_df$Ind <- factor(chr12_bit1_geno_plot_df$Ind, 
+                            levels = unique((chr12_bit1_geno_plot_df$Ind)[order(chr12_bit1_geno_plot_df$cluster)]))
+
+# Plot your genotype heatmap 
+chr12_bit1_geno_heatmap <- heatmapdf2plot(chr12_bit1_geno_plot_df)
+
+## Make the colored bar that is for your population colors 
+## this will serve as your X-axis and your population ID will serve as your y-axis
+chr12_bit1_geno_plot_df <- chr12_bit1_geno_plot_df %>% 
+  mutate(cluster_text = "cluster")
+
+# plot a bar that represents population ids for the individuals in rows of the genotype heatmap
+chr12_bit1_geno_bar <- df2bar(chr12_bit1_geno_plot_df)
+
+(chr12_bit1_full_geno_heatmap <- ggarrange(chr12_bit1_geno_bar, chr12_bit1_geno_heatmap, widths = c(0.3, 1)))
+
+#ggsave(paste0(FIG_DIR, PREFIX, "_chr12-1_genotype-heatmap.jpg"), width = 12, height = 8, units = "in", dpi = 600)
+
+```
+
+
+
+### chr12 - bit 2
+#### EBS spawning pops
+```{r chr12_bit2_genoheatmap}
+
+chr12_bit2_heatmap_table <- beagle2heatmapdf(CHR12_BIT2_BEAGLE_FILENAME)
+chr12_bit2_geno_plot_df <- left_join(chr12_bit2_heatmap_table, features_df)
+
+## Factor the feature into the order you want them to plot
+chr12_bit2_geno_plot_df$cluster <- factor(chr12_bit2_geno_plot_df$eBSAI_clust_CORRECTED, levels = c("A", "B", "C", "D"))
+chr12_bit2_geno_plot_df$Ind <- factor(chr12_bit2_geno_plot_df$Ind, 
+                            levels = unique((chr12_bit2_geno_plot_df$Ind)[order(chr12_bit2_geno_plot_df$cluster)]))
+
+# Plot your genotype heatmap 
+chr12_bit2_geno_heatmap <- heatmapdf2plot(chr12_bit2_geno_plot_df)
+
+## Make the colored bar that is for your population colors 
+## this will serve as your X-axis and your population ID will serve as your y-axis
+chr12_bit2_geno_plot_df <- chr12_bit2_geno_plot_df %>% 
+  mutate(cluster_text = "cluster")
+
+# plot a bar that represents population ids for the individuals in rows of the genotype heatmap
+chr12_bit2_geno_bar <- df2bar(chr12_bit2_geno_plot_df)
+
+(chr12_bit2_full_geno_heatmap <- ggarrange(chr12_bit2_geno_bar, chr12_bit2_geno_heatmap, widths = c(0.3, 1)))
+
+#ggsave(paste0(FIG_DIR, PREFIX, "_chr12-2_genotype-heatmap.jpg"), width = 12, height = 8, units = "in", dpi = 600)
+
+```
+
+
+
+#### GOA + UN + EBS + KOTZ (ALL-noJP)
+```{r chr12_sv_ALL-noJP_genoheatmap}
+
+chr12_sv_all_nojp_heatmap_table <- beagle2heatmapdf(CHR12_SV_ALL_noJP_BEAGLE_FILENAME)
+chr12_sv_all_nojp_geno_plot_df <- left_join(chr12_sv_all_nojp_heatmap_table, features_df)
+
+## Factor the feature into the order you want them to plot
+chr12_sv_all_nojp_geno_plot_df$cluster <- factor(chr12_sv_all_nojp_geno_plot_df$cluster, levels = c("A", "B", "C", "D", "Unalaska", "Kotzebue", "GOA"))
+chr12_sv_all_nojp_geno_plot_df$Ind <- factor(chr12_sv_all_nojp_geno_plot_df$Ind, 
+                            levels = unique((chr12_sv_all_nojp_geno_plot_df$Ind)[order(chr12_sv_all_nojp_geno_plot_df$cluster)]))
+
+# Plot your genotype heatmap 
+chr12_sv_all_nojp_geno_heatmap <- heatmapdf2plot(chr12_sv_all_nojp_geno_plot_df)
+
+## Make the colored bar that is for your population colors 
+## this will serve as your X-axis and your population ID will serve as your y-axis
+chr12_sv_all_nojp_geno_plot_df <- chr12_sv_all_nojp_geno_plot_df %>% 
+  mutate(cluster_text = "cluster")
+
+# plot a bar that represents population ids for the individuals in rows of the genotype heatmap
+chr12_sv_all_nojp_geno_bar <- df2bar(chr12_sv_all_nojp_geno_plot_df)
+
+(chr12_sv_all_nojp_full_geno_heatmap <- ggarrange(chr12_sv_all_nojp_geno_bar, chr12_sv_all_nojp_geno_heatmap, widths = c(0.3, 1)))
+
+ggsave(paste0(FIG_DIR, PREFIX, "_ALL-noJP_chr12-2_genotype-heatmap.jpg"), width = 12, height = 8, units = "in", dpi = 600)
+
+```
+
+
+
+#### JP + GOA + UN + EBS + KOTZ (ALL)
+```{r chr7_sv_ALL_genoheatmap}
+
+chr12_sv_all_heatmap_table <- beagle2heatmapdf(CHR12_SV_ALL_BEAGLE_FILENAME)
+chr12_sv_all_geno_plot_df <- left_join(chr12_sv_all_heatmap_table, features_df)
+
+## Factor the feature into the order you want them to plot
+chr12_sv_all_geno_plot_df$cluster <- factor(chr12_sv_all_geno_plot_df$cluster, levels = c("A", "B", "C", "D", "Unalaska", "Kotzebue", "GOA", "Japan"))
+chr12_sv_all_geno_plot_df$Ind <- factor(chr12_sv_all_geno_plot_df$Ind, 
+                            levels = unique((chr12_sv_all_geno_plot_df$Ind)[order(chr12_sv_all_geno_plot_df$cluster)]))
+
+# Plot your genotype heatmap 
+chr12_sv_all_geno_heatmap <- heatmapdf2plot(chr12_sv_all_geno_plot_df)
+
+## Make the colored bar that is for your population colors 
+## this will serve as your X-axis and your population ID will serve as your y-axis
+chr12_sv_all_geno_plot_df <- chr12_sv_all_geno_plot_df %>% 
+  mutate(cluster_text = "cluster")
+
+# plot a bar that represents population ids for the individuals in rows of the genotype heatmap
+chr12_sv_all_geno_bar <- df2bar(chr12_sv_all_geno_plot_df)
+
+(chr12_sv_all_full_geno_heatmap <- ggarrange(chr12_sv_all_geno_bar, chr12_sv_all_geno_heatmap, widths = c(0.3, 1)))
+
+ggsave(paste0(FIG_DIR, PREFIX, "_ALL_chr12-2_genotype-heatmap.jpg"), width = 12, height = 8, units = "in", dpi = 600)
+
+```
+
+
