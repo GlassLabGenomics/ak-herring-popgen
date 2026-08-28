@@ -1,0 +1,4 @@
+1:CPAL-CPAL260-GOA-UN-EBS-KOTZ_wgphu:/scratch/letimm/bering-sea-herring/beagles/CPAL-CPAL260-GOA-UN-EBS-KOTZ_wgphu.beagle.gz
+2:CPAL-CPAL260-EBS-KOTZ_wgphu:/scratch/letimm/bering-sea-herring/beagles/CPAL-CPAL260-EBS-KOTZ_wgphu.beagle.gz
+3:CPAL-CPAL260-EBS_wgphu:/scratch/letimm/bering-sea-herring/beagles/CPAL-CPAL260-EBS_wgphu.beagle.gz
+4:CPAL-CPAL260-EBS_wgph:/scratch/letimm/bering-sea-herring/beagles/CPAL-CPAL260-EBS_wgph.beagle.gz

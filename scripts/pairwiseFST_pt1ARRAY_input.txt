@@ -1,0 +1,9 @@
+1:EBS:100
+2:GoodnewsBay:20
+3:Kotzebue:19
+4:NelsonIsland:20
+5:NortonSound:20
+6:PortMoller:20
+7:Togiak:20
+8:Unalaska:20
+9:GOA:40

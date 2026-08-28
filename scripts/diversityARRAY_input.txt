@@ -1,0 +1,8 @@
+1:Kotzebue:/scratch/letimm/bering-sea-herring/Kotzebue_bamslist.txt:19:95
+2:Unalaska:/scratch/letimm/bering-sea-herring/Unalaska_bamslist.txt:20:100
+3:EBS:/scratch/letimm/bering-sea-herring/EBSspawning_bamslist.txt:100:500
+4:Togiak:/scratch/letimm/bering-sea-herring/Togiak_bamslist.txt:20:100
+5:GoodnewsBay:/scratch/letimm/bering-sea-herring/GoodnewsBay_bamslist.txt:20:100
+6:NelsonIsland:/scratch/letimm/bering-sea-herring/NelsonIsland_bamslist.txt:20:100
+7:NortonSound:/scratch/letimm/bering-sea-herring/NortonSound_bamslist.txt:20:100
+8:PortMoller:/scratch/letimm/bering-sea-herring/PortMoller_bamslist.txt:20:100
