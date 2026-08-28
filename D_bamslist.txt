@@ -1,8 +1,0 @@
-/scratch/letimm/Clupea_pallasii260/bamtools/CPAL-CPAL260_417849_rg_sorted_dedup_clipped.bam
-/scratch/letimm/Clupea_pallasii260/bamtools/CPAL-CPAL260_NI060_rg_sorted_dedup_clipped.bam
-/scratch/letimm/Clupea_pallasii260/bamtools/CPAL-CPAL260_NI067_rg_sorted_dedup_clipped.bam
-/scratch/letimm/Clupea_pallasii260/bamtools/CPAL-CPAL260_NI085_rg_sorted_dedup_clipped.bam
-/scratch/letimm/Clupea_pallasii260/bamtools/CPAL-CPAL260_NI095_rg_sorted_dedup_clipped.bam
-/scratch/letimm/Clupea_pallasii260/bamtools/CPAL-CPAL260_NS157_rg_sorted_dedup_clipped.bam
-/scratch/letimm/Clupea_pallasii260/bamtools/CPAL-CPAL260_NS192_rg_sorted_dedup_clipped.bam
-/scratch/letimm/Clupea_pallasii260/bamtools/CPAL-CPAL260_PM67_rg_sorted_dedup_clipped.bam
