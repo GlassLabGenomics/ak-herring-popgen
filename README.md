@@ -39,7 +39,7 @@ One individual from Kotzebue (160432) fell below the mean sequencing depth thres
 ### Calculate genotype likelihoods across the genome
 Genotype likelihoods were calculated across all polymorphic sites with:
 - [CPAL-CPAL260_plm_glsARRAY.sh](https://github.com/GlassLabGenomics/ak-herring-popgen/blob/main/scripts/CPAL-CPAL260_plm_glsARRAY.sh)
-    - parallelized by chromosome with array input [CPAL-CPAL260_chromosomesARRAY_input.txt](https://github.com/GlassLabGenomics/ak-herring-popgen/blob/main/scripts/CPAL-CPAL260_paralogsARRAY_input.txt)
+    - parallelized by chromosome with array input [CPAL-CPAL260_chromosomesARRAY_input.txt](https://github.com/GlassLabGenomics/ak-herring-popgen/blob/main/scripts/CPAL-CPAL260_chromosomesARRAY_input.txt)
 
 As the output of these scripts are genotype likelihoods for each chromosome individually, data were concatenated manually.
 
