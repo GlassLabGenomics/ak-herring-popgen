@@ -14,12 +14,9 @@ The [Pacific herring reference genome](https://ftp.ncbi.nlm.nih.gov/genomes/all/
 Raw fastqs were quality-checked with FASTQC and multiQC with th following scripts:
 - [CPAL-CPAL260-raw_fastqcARRAY.sh](https://github.com/GlassLabGenomics/ak-herring-popgen/blob/main/scripts/CPAL-CPAL260-raw_fastqcARRAY.sh) to check quality of raw fastqs with FASTQC
     - ran with the array input [CPAL-CPAL260-raw_fqcARRAY_input.txt](https://github.com/GlassLabGenomics/ak-herring-popgen/blob/main/scripts/CPAL-CPAL260-raw_fastqcARRAY_input.txt)
-
 - [CPAL-CPAL260-raw_multiqcSLURM.sh](https://github.com/GlassLabGenomics/ak-herring-popgen/blob/main/scripts/CPAL-CPAL260-raw_multiqcSLURM.sh) to collate raw FASTQC results 
-
 -  [CPAL-CPAL260_trimARRAY.sh](https://github.com/GlassLabGenomics/ak-herring-popgen/blob/main/scripts/CPAL-CPAL260_trimARRAY.sh) to trim [Nextera adapters](https://github.com/usadellab/Trimmomatic/blob/main/adapters/NexteraPE-PE.fa)
     - ran with the array input [CPAL-CPAL260_trimARRAY_input.txt](https://github.com/GlassLabGenomics/ak-herring-popgen/blob/main/scripts/CPAL-CPAL260_trimARRAY_input.txt).
-
 - [CPAL-CPAL260-trim_fastqcARRAY.sh](https://github.com/GlassLabGenomics/ak-herring-popgen/blob/main/scripts/CPAL-CPAL260-trim_fastqcARRAY.sh) to check individual trimmed fastqs quality with FASTQC
     - ran with the array input [CPAL-CPAL260-trim_fqcARRAY_input.txt](https://github.com/GlassLabGenomics/ak-herring-popgen/blob/main/scripts/CPAL-CPAL260-trim_fastqcARRAY_input.txt)
 - [CPAL-CPAL260-trim_multiqcSLURM.sh](https://github.com/GlassLabGenomics/ak-herring-popgen/blob/main/scripts/CPAL-CPAL260-trim_multiqcSLURM.sh) to collate rrimmed fastq results with multiQC
@@ -48,7 +45,6 @@ Paralogous sites were identified by piping samtools mpileup output to [ngsParalo
 
 - To maintain computational tractability, the full list of SNPs identified through genotype likelihood calculation was split into 250 sites lists that could run in parallel with [CPAL-CPAL260_paralogsARRAY.sh](https://github.com/GlassLabGenomics/ak-herring-popgen/blob/main/scripts/CPAL-CPAL260_paralogsARRAY.sh)
     - all 250 lists were passed with [CPAL-CPAL260_paralogsARRAY_input.txt](https://github.com/GlassLabGenomics/ak-herring-popgen/blob/main/scripts/CPAL-CPAL260_paralogsARRAY_input.txt)
-
 - The likelihood ratio for each site was tested for significance in R with [ngsParalog_sigTest.R](https://github.com/letimm/WGSfqs-to-genolikelihoods/blob/main/ngsParalog_sigTest.R)
     - retained sites were indexed in ANGSD with [CPAL-CPAL260_sigLR.sh](https://github.com/GlassLabGenomics/ak-herring-popgen/blob/main/scripts/CPAL-CPAL260_sigLR.sh).
 
@@ -119,7 +115,6 @@ the sum of each chromosome's diversity value, divided by the total number of sit
 - Heterozygosity was calculated with [hetARRAY.sh](https://github.com/letimm) 
     - ran arrayed across individuals with [hetARRAY_input.txt](https://github.com/GlassLabGenomics/ak-herring-popgen/blob/main/scripts/diversityARRAY_input.txt)
 
-
 Individual heterozygosity was calculated from the ml files as the number of heterozygous sites divided by the total number of sites
 
 Population-level heterozygosity was calculated as the average individual heterozygosity for the population.
@@ -136,7 +131,7 @@ _F_<sub>ST</sub> was calculated for every SNP to identify genomic sites differen
 ## Evaluating structural variants (SVs)
 PCA of wgph data from eastern Bering Sea samples placed individuals into four clusters (A, B, C, and D). Manhattan plots of sitewise _F_<sub>ST</sub> localized signal to structural variants (SVs) on chromosome 7 and chromosome 12. 
 
-Visualization of analyses of these SVs is detailed in [CPAL-CPAL260-sv.Rmd](https://github.com/letimm).
+Visualization of analyses of these SVs is detailed in [CPAL-CPAL260-sv.Rmd]([https://github.com/letimm)](https://github.com/GlassLabGenomics/ak-herring-popgen/blob/main/sv_scripts/CPAL-CPAL260-sv.Rmd).
 
 ### Genotype likelihoods
 SV margins were determined by sitewise _F_<sub>ST</sub> and genotype likelihoods were calculated:
